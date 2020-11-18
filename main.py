@@ -385,7 +385,7 @@ def get_opt_constructor(opt_type):
     elif opt_type == 'RAdam':
         return partial(RAdam, lr=1e-3, beta=0.9, beta2=0.99)
     elif opt_type == 'NVRMRadam':
-        return partial(NVRMRadam, lr=1e-3, beta1=0.9, beta2=0.99)
+        return partial(NVRMRadam, lr=1e-3, beta1=0.9, beta2=0.99, variability=1.6e-2)
     elif opt_type == 'LookAhead':
         slow_opt = Adam(params=None, lr=1e-3, beta=0.9, beta2=0.99)
         return partial(LookAhead, alpha=0.5, la_steps=5, optimizer=slow_opt)
