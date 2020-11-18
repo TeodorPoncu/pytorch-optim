@@ -1,0 +1,3 @@
+device: 0
+model_type: squeezenet
+opt_type: RAdam
