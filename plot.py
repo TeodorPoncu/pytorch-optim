@@ -34,7 +34,7 @@ learning_rates = [
     '3.125e-06',
 ]
 
-descriptions = ['grad_means', 'grad_variances', 'pert_acc', 'pert_loss', 'test_acc', 'test_loss', 'train_acc',
+metrics = ['grad_means', 'grad_variances', 'pert_acc', 'pert_loss', 'test_acc', 'test_loss', 'train_acc',
                 'train_loss', 'train_times']
 
 logdir = os.path.expanduser('~/pytorch-optim/')
@@ -62,7 +62,7 @@ for nn in nn_names:
             experiments[nn][optim][lr] = log_files
 
             if log_files:
-                average_candidates = {k: [] for k in descriptions}
+                average_candidates = {k: [] for k in metrics}
 
                 for fname in log_files:
                     with open(fname, 'r') as f:
@@ -82,17 +82,21 @@ for nn in nn_names:
 # pprint(experiments_averages['mobilenet']['Adam'])
 
 for nn in nn_names:
-    for description in descriptions:
+    for metric in metrics:
 
         for optim in optim_names:
             for lr in learning_rates:
 
                 try:
-                    plt.plot(experiments_averages[nn][optim][lr][description], label=f'{optim} {lr}')
+                    plt.plot(experiments_averages[nn][optim][lr][metric], label=f'{optim} {lr}')
                 except KeyError:
-                    print(f'No data for {nn} {optim} {lr} {description}')
+                    print(f'No data for {nn} {optim} {lr} {metric}')
+
+        plt.xlabel('epoch')
+        plt.ylabel(metric)
+        plt.title(nn)
 
         plt.legend()
         # plt.show()
-        plt.savefig(f'img/{nn}_{description}.jpg')
+        plt.savefig(f'img/{nn}_{metric}.jpg')
         plt.clf()
