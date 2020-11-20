@@ -13,6 +13,7 @@ nn_names = [
     'densenet',
     'mobilenet',
     'squeezenet',
+    'resnet-small',
 ]
 
 optim_names = [
@@ -147,7 +148,7 @@ for nn in nn_names:
                 except KeyError:
                     print(f'No data for {nn} {optim} {lr} {metric}')
 
-        plt.xlabel('epoch')
+        plt.xlabel('Epoch')
         plt.ylabel(metrics_translation[metric])
         plt.title(nn)
 
@@ -171,7 +172,7 @@ for nn in nn_names:
                 except KeyError:
                     print(f'No data for {nn} {optim} {lr} {metric}')
 
-            plt.xlabel('epoch')
+            plt.xlabel('Epoch')
             plt.ylabel(metrics_translation[metric])
             plt.title(nn)
 
@@ -194,7 +195,7 @@ for nn in nn_names:
                 except KeyError:
                     print(f'No data for {nn} {optim} {lr} {metric}')
 
-        plt.xlabel('epoch')
+        plt.xlabel('Epoch')
         plt.ylabel(metrics_translation[metric])
         plt.title(nn)
 
