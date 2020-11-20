@@ -2,6 +2,9 @@
 import torch
 import torchvision
 import time
+#from multiprocessing import Pool, Process
+import multiprocessing
+from multiprocessing import pool
 
 from torch import nn
 from torch.nn import functional as F
@@ -13,6 +16,8 @@ from torchvision.models.squeezenet import squeezenet1_1
 from utils import *
 from math import sqrt
 from typing import Final
+from tqdm import tqdm
+
 
 import yaml
 import json
@@ -24,7 +29,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import CIFAR10, MNIST, ImageFolder
 
 
-def make_one_hot(target : int, num_classes=10):
+def make_one_hot(target: int, num_classes=10):
     # kinda slow but this bullshit pytorch wants per element function
     target = torch.ones(size=(10,)) * target
     target = (target == torch.arange(num_classes))
@@ -76,6 +81,7 @@ class Optimizer(object):
         if epoch in epoch_stamps:
             self.lr = schedule_fn(self.lr)
 
+
 class SGD(Optimizer):
     def __init__(self, params, **kwargs):
         super(SGD, self).__init__(params, **kwargs)
@@ -90,11 +96,7 @@ class SGD(Optimizer):
                 p.data -= p.grad.data * self.lr
 
 
-
-
 class Adam(Optimizer):
-    beta1: Final[float]
-    beta2: Final[float]
 
     def __init__(self, params, **kwargs):
         super(Adam, self).__init__(params, **kwargs)
@@ -107,8 +109,6 @@ class Adam(Optimizer):
         self.m = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
         self.v = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
         self.t_step = 1
-
-
 
     @torch.no_grad()
     def step(self):
@@ -137,9 +137,57 @@ class Adam(Optimizer):
         self.t_step = self.t_step + 1
 
 
+class NVMRAdam(Optimizer):
+
+    def __init__(self, params, **kwargs):
+        super(NVMRAdam, self).__init__(params, **kwargs)
+        self.beta1 = self.options['beta1']
+        self.beta2 = self.options['beta2']
+        self.variability = self.options['variability']
+        self.m = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+        self.v = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+        self.n = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+
+
+    def reset_state(self):
+        self.m = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+        self.v = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+        self.n = {p: torch.zeros_like(p, memory_format=torch.preserve_format) for p in self.params}
+        self.t_step = 1
+
+    @torch.no_grad()
+    def step(self):
+        # compute bias correction
+        bias_correction1 = 1 - self.beta1 ** self.t_step
+        bias_correction2 = 1 - self.beta2 ** self.t_step
+
+        for p in self.params:
+            if p.grad is not None:
+                # compute exponential moving average
+                self.m[p] = self.m[p] * self.beta1 + p.grad.data * (1 - self.beta1)
+
+                # compute exponential squared moving average
+                self.v[p] = self.v[p] * self.beta2 + p.grad.data ** 2 * (1 - self.beta2)
+
+                # compute the adaptive learning rate
+                l_t = self.v[p].sqrt() / (sqrt(bias_correction2) + 1e-7) + 1e-7
+
+                # compute step_size -> includes bias-correction for 1st moment EMA
+                step_size = self.lr / bias_correction1
+
+                # apply return update
+                p.data -= self.m[p] / l_t * step_size
+
+                # NVRM update
+                noise = torch.normal(torch.zeros_like(p.data), self.variability)
+                p.data += noise - self.n[p]
+                self.n[p].copy_(noise)
+
+        # update current optimization step
+        self.t_step = self.t_step + 1
+
+
 class RAdam(Optimizer):
-    beta1: Final[float]
-    beta2: Final[float]
 
     def __init__(self, params, **kwargs):
         super(RAdam, self).__init__(params, **kwargs)
@@ -198,9 +246,6 @@ class RAdam(Optimizer):
 
 
 class NVRMRadam(Optimizer):
-    beta1: Final[float]
-    beta2: Final[float]
-    variability: Final[float]
 
     def __init__(self, params, **kwargs):
         super(NVRMRadam, self).__init__(params, **kwargs)
@@ -291,6 +336,9 @@ class LookAhead(Optimizer):
 def train_model(model, optimizer, loss_fn, loader: DataLoader):
     acc = 0.
     total_loss = 0.
+
+    device = next(model.parameters()).device
+
     for idx, sample in enumerate(loader):
         optimizer.zero_grad()
 
@@ -318,6 +366,9 @@ def train_model(model, optimizer, loss_fn, loader: DataLoader):
 def test_model(model, loss_fn, loader: DataLoader):
     acc = 0.
     total_loss = 0.
+
+    device = next(model.parameters()).device
+
     with torch.no_grad():
         for idx, sample in enumerate(loader):
             X, y = sample
@@ -393,8 +444,33 @@ def run_experiment(model, optimizer, loaders, loss_fn, num_epochs):
             'grad_means': grad_means, 'train_times': train_times}
 
 
-def run_across_seeds(seeds, model_type, opt_type, device, loaders):
+def run_across_seeds(config):
     # torch.backends.cudnn.deterministic = True
+
+    torch.manual_seed(0)
+
+    device = torch.device('cuda:{}'.format(int(config['device'])))
+    model_type = config['model_type']
+    opt_type = config['opt_type']
+
+    batch_size = 64
+    seeds = [150720, 56889, 1636004]
+
+    target_transform = make_one_hot
+    test_transform = image_transform
+    test_p_transform = perturb_transform
+
+    train_set = ImageNetteDataset('imagenette2-320/train', transform=image_transform, target_transform=target_transform)
+    train_loader = DataLoader(train_set, num_workers=2, pin_memory=True, shuffle=True,
+                              batch_size=batch_size)
+
+    test_set = ImageNetteDataset('imagenette2-320/val', transform=test_transform, target_transform=target_transform)
+    test_loader = DataLoader(test_set, num_workers=1, pin_memory=True, shuffle=True, batch_size=batch_size)
+
+    perturb_set = ImageNetteDataset('imagenette2-320/val', transform=test_p_transform, target_transform=target_transform)
+    perturb_loader = DataLoader(perturb_set, num_workers=1, pin_memory=True, shuffle=True, batch_size=batch_size)
+
+    loaders = (train_loader, test_loader, perturb_loader)
 
     loss_fn = nn.BCEWithLogitsLoss().to(device)
 
@@ -404,9 +480,14 @@ def run_across_seeds(seeds, model_type, opt_type, device, loaders):
         model = get_model_constructor(model_type)(pretrained=False, progress=False, num_classes=10)
         model = model.to(device)
         model = torch.jit.trace(model, example_inputs=torch.ones(size=(128, 3, 256, 256), device=device))
-        opt = get_opt_constructor(opt_type, params=list(model.parameters()))()
+        opt = get_opt_constructor(opt_type, params=list(model.parameters()), config=config)()
         results[seed] = run_experiment(model, opt, loaders, loss_fn, num_epochs=50)
-        with open('_'.join([str(seed), model_type, opt_type]), 'w') as f:
+
+        path_string = 'runs/' + '_'.join([str(seed), model_type, opt_type, str(opt.options['lr'])])
+        if opt_type == 'NVRMAdam' or opt_type == 'NVRMRadam':
+            path_string = path_string + '_' + str(config['variability'])
+
+        with open(path_string, 'w') as f:
             yaml.dump(results[seed], f)
     return results
 
@@ -420,46 +501,76 @@ def get_model_constructor(model_type):
         return mobilenet_v2
     elif model_type == 'squeezenet':
         return squeezenet1_1
+    elif model_type == 'resnet-small':
+        return resnet18
 
 
-def get_opt_constructor(opt_type, params):
+def get_opt_constructor(opt_type, params, config):
     if opt_type == 'Adam':
-        return partial(Adam, params, lr=1e-3, beta1=0.9, beta2=0.99)
+        return partial(Adam, params, lr=config['lr'], beta1=0.9, beta2=0.99)
     elif opt_type == 'RAdam':
-        return partial(RAdam, params, lr=1e-3, beta1=0.9, beta2=0.99)
+        return partial(RAdam, params, lr=config['lr'], beta1=0.9, beta2=0.99)
+    elif opt_type == 'NVRMAdam':
+        return partial(NVMRAdam, params, lr=config['lr'], beta1=0.9, beta2=0.99, variability=config['variability'])
     elif opt_type == 'NVRMRadam':
-        return partial(NVRMRadam, params, lr=1e-3, beta1=0.9, beta2=0.99, variability=1.6e-2)
-    elif opt_type == 'LookAhead':
-        slow_opt = RAdam(params=params, lr=1e-3, beta1=0.9, beta2=0.99)
-        return partial(LookAhead, params=params, alpha=0.5, la_steps=6, optimizer=slow_opt, lr=1e-3)
+        return partial(NVRMRadam, params, lr=config['lr'], beta1=0.9, beta2=0.99, variability=config['variability'])
+    elif opt_type == 'LookAheadRAdam':
+        slow_opt = RAdam(params=params, lr=config['lr'], beta1=0.9, beta2=0.99)
+        return partial(LookAhead, params=params, alpha=0.5, la_steps=6, optimizer=slow_opt, lr=config['lr'])
+    elif opt_type == 'LookAheadAdam':
+        slow_opt = Adam(params=params, lr=config['lr'], beta1=0.9, beta2=0.99)
+        return partial(LookAhead, params=params, alpha=0.5, la_steps=6, optimizer=slow_opt, lr=config['lr'])
+
+
+def generate_experiment(model_type, opt_type, opt_lr, variability, device):
+    return {
+        'model_type': model_type,
+        'opt_type': opt_type,
+        'lr': opt_lr,
+        'variability': variability,
+        'device': device
+    }
+
+
+class NoDaemonProcess(multiprocessing.Process):
+    @property
+    def daemon(self):
+        return False
+
+    @daemon.setter
+    def daemon(self, value):
+        pass
+
+
+class NoDaemonContext(type(multiprocessing.get_context())):
+    Process = NoDaemonProcess
+
+# We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
+# because the latter is only a wrapper function, not a proper class.
+class NestablePool(multiprocessing.pool.Pool):
+    def __init__(self, *args, **kwargs):
+        kwargs['context'] = NoDaemonContext()
+        super(NestablePool, self).__init__(*args, **kwargs)
 
 
 if __name__ == '__main__':
-    with open('config.yml') as f:
-        config = yaml.load(f, Loader=yaml.SafeLoader)
+    todo_experiments = [
+        generate_experiment('resnet-small', 'LookAheadAdam', 1e-3, 1.6e-2, 0),
+        generate_experiment('resnet-small', 'LookAheadAdam', 1e-2, 1.6e-2, 0),
+        generate_experiment('resnet-small', 'LookAheadAdam', 1e-1, 1.6e-2, 0),
+        generate_experiment('resnet-small', 'LookAheadRAdam', 1e-3, 1.6e-2, 0),
+        generate_experiment('resnet-small', 'LookAheadRAdam', 1e-2, 1.6e-2, 0),
+        generate_experiment('resnet-small', 'LookAheadRAdam', 1e-1, 1.6e-2, 3),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-3, 1.6e-2, 2),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-2, 1.6e-2, 2),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-1, 1.6e-2, 2),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-3, 1.6e1, 2),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-3, 1.6e0, 2),
+        generate_experiment('resnet-small', 'NVRMAdam', 1e-3, 1.6e-2, 3),
+        generate_experiment('resnet-small', 'NVRMRadam', 1e-3, 1.6e1, 3),
+        generate_experiment('resnet-small', 'NVRMRadam', 1e-3, 1.6e0, 3),
+        generate_experiment('resnet-small', 'NVRMRadam', 1e-3, 1.6e-2, 3),
+    ]
 
-    batch_size = 64
-    seeds = [150720, 56889, 1636004]
-    device = torch.device('cuda:{}'.format(int(config['device'])))
-    model_type = config['model_type']
-    opt_type = config['opt_type']
-
-    torch.manual_seed(0)
-
-    target_transform = make_one_hot
-    test_transform = image_transform
-    test_p_transform = perturb_transform
-
-    train_set = ImageNetteDataset('imagenette2-320/train', transform=image_transform, target_transform=target_transform)
-    train_loader = DataLoader(train_set, num_workers=32, pin_memory=True, shuffle=True,
-                              batch_size=batch_size)  # compute_dataset_statistics(dset)
-
-    test_set = ImageNetteDataset('imagenette2-320/val', transform=test_transform, target_transform=target_transform)
-    test_loader = DataLoader(test_set, num_workers=32, pin_memory=True, shuffle=True, batch_size=batch_size)
-
-    perturb_set = ImageNetteDataset('imagenette2-320/val', transform=test_p_transform, target_transform=target_transform)
-    perturb_loader = DataLoader(test_set, num_workers=32, pin_memory=True, shuffle=True, batch_size=batch_size)
-
-    loaders = (train_loader, test_loader, perturb_loader)
-
-    results = run_across_seeds(seeds, model_type, opt_type, device, loaders)
+    p = NestablePool(len(todo_experiments))
+    results = list(tqdm(p.imap(run_across_seeds, todo_experiments), total=len(todo_experiments)))

@@ -1,3 +1,7 @@
-device: 0
-model_type: mobilenet
-opt_type: LookAhead
+device: 1
+model_type: resnet-small
+opt_type: LookAheadRAdam
+lr: 1e-3
+
+# only for NVMR
+variability: 1.6e-2
