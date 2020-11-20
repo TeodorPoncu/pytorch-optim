@@ -19,8 +19,11 @@ nn_names = [
 optim_names = [
     'Adam',
     'RAdam',
+    'NVRMAdam',
     'NVRMRadam',
     'LookAhead',
+    'LookAheadAdam',
+    'LookAheadRAdam',
 ]
 
 seeds = [
@@ -57,6 +60,8 @@ metrics_translation = {
     'train_loss': 'Train Loss',
     'train_times': 'Train Times',
 }
+
+plot_dpi = 300
 
 
 logdir = os.path.expanduser('~/pytorch-optim/runs/')
@@ -136,7 +141,6 @@ for nn in nn_names:
 
 for nn in nn_names:
     for metric in metrics:
-
         for optim in optim_names:
             for lr in learning_rates:
 
@@ -154,7 +158,7 @@ for nn in nn_names:
 
         plt.legend()
         # plt.show()
-        plt.savefig(f'img/compare_opts/{nn}_{metric}.jpg')
+        plt.savefig(f'img/compare_opts/{nn}_{metric}.jpg', dpi=plot_dpi)
         plt.clf()
 
 # learning rates showdown
@@ -178,7 +182,7 @@ for nn in nn_names:
 
             plt.legend()
             # plt.show()
-            plt.savefig(f'img/compare_lr/{nn}_{metric}.jpg')
+            plt.savefig(f'img/compare_lr/{nn}_{metric}.jpg', dpi=plot_dpi)
             plt.clf()
 
 # variability showdown
@@ -201,5 +205,5 @@ for nn in nn_names:
 
         plt.legend()
         # plt.show()
-        plt.savefig(f'img/compare_vb/{nn}_{metric}.jpg')
+        plt.savefig(f'img/compare_vb/{nn}_{metric}.jpg', dpi=plot_dpi)
         plt.clf()
